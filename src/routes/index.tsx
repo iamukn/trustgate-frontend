@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import { ShieldCheck, Smartphone, CreditCard, Loader2, CheckCircle2, AlertTriangle, XCircle, Lock } from "lucide-react";
+import { ShieldCheck, Smartphone, CreditCard, Loader2, CheckCircle2, AlertTriangle, XCircle, Lock, Hash } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,16 +18,15 @@ export const Route = createFileRoute("/")({
 
 const PAYMENT_URL = "https://payment.example.com";
 
-type Step = "sim" | "device" | "payment";
-type StepState = "pending" | "active" | "success" | "warning" | "error";
+type Step = "sim" | "device" | "numbers" | "payment";
+type StepState = "pending" | "active" | "success" | "warning" | "error" | "skipped";
 type FlowState =
   | { kind: "idle" }
-  | { kind: "checking-sim" }
-  | { kind: "sim-safe" }
-  | { kind: "sim-swapped" }
-  | { kind: "verifying-device" }
-  | { kind: "verified" }
-  | { kind: "mismatch" };
+  | { kind: "checking" } // SIM + Device in parallel
+  | { kind: "all-passed" } // both ok → straight to payment
+  | { kind: "fallback-numbers"; simSwapped: boolean; deviceMismatch: boolean }
+  | { kind: "numbers-verified"; simSwapped: boolean; deviceMismatch: boolean }
+  | { kind: "blocked"; simSwapped: boolean; deviceMismatch: boolean };
 
 function Index() {
   const [phone, setPhone] = useState("");
@@ -35,11 +34,18 @@ function Index() {
   const [email, setEmail] = useState("");
   const [phoneError, setPhoneError] = useState("");
   const [flow, setFlow] = useState<FlowState>({ kind: "idle" });
+  // Per-step result tracking for the timeline
+  const [simResult, setSimResult] = useState<StepState>("pending");
+  const [deviceResult, setDeviceResult] = useState<StepState>("pending");
+  const [numbersResult, setNumbersResult] = useState<StepState>("pending");
 
   const validatePhone = (v: string) => /^\+?[1-9]\d{7,14}$/.test(v.replace(/[\s-]/g, ""));
 
   const reset = () => {
     setFlow({ kind: "idle" });
+    setSimResult("pending");
+    setDeviceResult("pending");
+    setNumbersResult("pending");
   };
 
   const redirectToPayment = () => {
@@ -55,53 +61,60 @@ function Index() {
       return;
     }
 
-    setFlow({ kind: "checking-sim" });
-    // Mock SIM swap check — phone ending in even digit = safe, odd = swapped
-    await new Promise((r) => setTimeout(r, 1400));
-    const lastDigit = parseInt(phone.replace(/\D/g, "").slice(-1), 10);
-    const swapped = lastDigit % 2 === 1;
+    setSimResult("active");
+    setDeviceResult("active");
+    setNumbersResult("pending");
+    setFlow({ kind: "checking" });
 
-    if (!swapped) {
-      setFlow({ kind: "sim-safe" });
+    // Mock — run SIM swap + Device check in parallel
+    const digits = phone.replace(/\D/g, "");
+    const lastDigit = parseInt(digits.slice(-1), 10);
+    const secondLast = parseInt(digits.slice(-2, -1) || "0", 10);
+
+    // Rules: last digit odd → SIM swapped; second-to-last == 9 → device mismatch
+    const simSwapped = lastDigit % 2 === 1;
+    const deviceMismatch = secondLast === 9;
+
+    await Promise.all([
+      new Promise((r) => setTimeout(r, 1400)),
+      new Promise((r) => setTimeout(r, 1600)),
+    ]);
+
+    setSimResult(simSwapped ? "warning" : "success");
+    setDeviceResult(deviceMismatch ? "warning" : "success");
+
+    // ✅ Happy path — both checks valid
+    if (!simSwapped && !deviceMismatch) {
+      setNumbersResult("skipped");
+      setFlow({ kind: "all-passed" });
       redirectToPayment();
       return;
     }
 
-    setFlow({ kind: "sim-swapped" });
-    await new Promise((r) => setTimeout(r, 1200));
-    setFlow({ kind: "verifying-device" });
+    // ⚠️ Either failed → run Numbers Verify as fallback
+    setFlow({ kind: "fallback-numbers", simSwapped, deviceMismatch });
+    setNumbersResult("active");
+    await new Promise((r) => setTimeout(r, 1500));
 
-    // Mock device + numbers verify — phone ending in 9 fails, others succeed
-    await new Promise((r) => setTimeout(r, 1600));
-    const matches = lastDigit !== 9;
+    // Mock — fallback succeeds unless BOTH primary checks failed
+    const numbersOk = !(simSwapped && deviceMismatch);
 
-    if (matches) {
-      setFlow({ kind: "verified" });
+    if (numbersOk) {
+      setNumbersResult("success");
+      setFlow({ kind: "numbers-verified", simSwapped, deviceMismatch });
       redirectToPayment();
     } else {
-      setFlow({ kind: "mismatch" });
+      setNumbersResult("error");
+      setFlow({ kind: "blocked", simSwapped, deviceMismatch });
     }
   };
 
-  const isLoading = flow.kind === "checking-sim" || flow.kind === "verifying-device";
+  const isLoading = flow.kind === "checking" || flow.kind === "fallback-numbers";
 
-  const stepStates: Record<Step, StepState> = (() => {
-    switch (flow.kind) {
-      case "idle":
-        return { sim: "pending", device: "pending", payment: "pending" };
-      case "checking-sim":
-        return { sim: "active", device: "pending", payment: "pending" };
-      case "sim-safe":
-        return { sim: "success", device: "pending", payment: "active" };
-      case "sim-swapped":
-        return { sim: "warning", device: "pending", payment: "pending" };
-      case "verifying-device":
-        return { sim: "warning", device: "active", payment: "pending" };
-      case "verified":
-        return { sim: "warning", device: "success", payment: "active" };
-      case "mismatch":
-        return { sim: "warning", device: "error", payment: "error" };
-    }
+  const paymentState: StepState = (() => {
+    if (flow.kind === "all-passed" || flow.kind === "numbers-verified") return "active";
+    if (flow.kind === "blocked") return "error";
+    return "pending";
   })();
 
   return (
@@ -173,14 +186,14 @@ function Index() {
 
               <Button
                 onClick={handleVerify}
-                disabled={isLoading || flow.kind === "sim-safe" || flow.kind === "verified"}
+                disabled={isLoading || flow.kind === "all-passed" || flow.kind === "numbers-verified"}
                 size="lg"
                 className="w-full bg-[image:var(--gradient-hero)] hover:opacity-95 transition-opacity shadow-[var(--shadow-elegant)]"
               >
                 {isLoading ? (
-                  <><Loader2 className="h-4 w-4 animate-spin" /> {flow.kind === "checking-sim" ? "Checking SIM..." : "Verifying device..."}</>
+                  <><Loader2 className="h-4 w-4 animate-spin" /> {flow.kind === "checking" ? "Running SIM & device checks..." : "Verifying number..."}</>
                 ) : (
-                  <><ShieldCheck className="h-4 w-4" /> Verify SIM Status</>
+                  <><ShieldCheck className="h-4 w-4" /> Verify & Continue</>
                 )}
               </Button>
 
@@ -193,15 +206,16 @@ function Index() {
           <aside className="rounded-2xl border border-border bg-card p-6">
             <h3 className="text-sm font-semibold mb-4">Security Status</h3>
             <ol className="space-y-4">
-              <TimelineItem icon={<ShieldCheck className="h-4 w-4" />} label="SIM check" hint="CAMARA SIM Swap API" state={stepStates.sim} />
-              <TimelineItem icon={<Smartphone className="h-4 w-4" />} label="Device verification" hint="Numbers + Device APIs" state={stepStates.device} />
-              <TimelineItem icon={<CreditCard className="h-4 w-4" />} label="Payment redirect" hint="Secure checkout" state={stepStates.payment} />
+              <TimelineItem icon={<ShieldCheck className="h-4 w-4" />} label="SIM swap check" hint="CAMARA SIM Swap API" state={simResult} />
+              <TimelineItem icon={<Smartphone className="h-4 w-4" />} label="Device verification" hint="CAMARA Device API" state={deviceResult} />
+              <TimelineItem icon={<Hash className="h-4 w-4" />} label="Number verification" hint="Fallback · Numbers Verify API" state={numbersResult} />
+              <TimelineItem icon={<CreditCard className="h-4 w-4" />} label="Payment redirect" hint="Secure checkout" state={paymentState} />
             </ol>
           </aside>
         </div>
 
         <p className="text-center text-xs text-muted-foreground mt-10">
-          Demo mode · Phone numbers ending in odd digits simulate a swap; ending in 9 simulates mismatch.
+          Demo · Last digit odd → SIM swap. Second-to-last digit 9 → device mismatch. Both failing → blocked.
         </p>
       </main>
     </div>
@@ -211,14 +225,24 @@ function Index() {
 function StatusBanner({ flow, onReset }: { flow: FlowState; onReset: () => void }) {
   if (flow.kind === "idle") return null;
 
-  const config = {
-    "checking-sim": { tone: "info", icon: <Loader2 className="h-5 w-5 animate-spin" />, title: "Checking SIM swap status...", body: "Querying the CAMARA SIM Swap API." },
-    "sim-safe": { tone: "success", icon: <CheckCircle2 className="h-5 w-5" />, title: "SIM is safe. No swap detected.", body: "Redirecting you to secure payment..." },
-    "sim-swapped": { tone: "warning", icon: <AlertTriangle className="h-5 w-5" />, title: "SIM swap detected.", body: "Additional device verification required." },
-    "verifying-device": { tone: "info", icon: <Loader2 className="h-5 w-5 animate-spin" />, title: "Verifying device & number...", body: "Cross-checking with Numbers and Device APIs." },
-    "verified": { tone: "success", icon: <CheckCircle2 className="h-5 w-5" />, title: "Identity verified. Proceeding to payment...", body: "Device and number match confirmed." },
-    "mismatch": { tone: "error", icon: <XCircle className="h-5 w-5" />, title: "Verification failed.", body: "Device and number mismatch. Payment blocked for your safety." },
-  }[flow.kind];
+  const config = (() => {
+    switch (flow.kind) {
+      case "checking":
+        return { tone: "info" as const, icon: <Loader2 className="h-5 w-5 animate-spin" />, title: "Running SIM swap & device checks...", body: "Querying CAMARA SIM Swap and Device APIs in parallel." };
+      case "all-passed":
+        return { tone: "success" as const, icon: <CheckCircle2 className="h-5 w-5" />, title: "All checks passed. SIM and device are valid.", body: "Redirecting you to secure payment..." };
+      case "fallback-numbers": {
+        const reason = flow.simSwapped && flow.deviceMismatch
+          ? "SIM swap and device mismatch detected"
+          : flow.simSwapped ? "SIM swap detected" : "Device mismatch detected";
+        return { tone: "warning" as const, icon: <AlertTriangle className="h-5 w-5" />, title: `${reason}.`, body: "Running fallback Number Verification..." };
+      }
+      case "numbers-verified":
+        return { tone: "success" as const, icon: <CheckCircle2 className="h-5 w-5" />, title: "Number verified via fallback. Identity confirmed.", body: "Redirecting you to secure payment..." };
+      case "blocked":
+        return { tone: "error" as const, icon: <XCircle className="h-5 w-5" />, title: "Verification failed.", body: "SIM, device and number checks could not confirm your identity. Payment blocked for your safety." };
+    }
+  })();
 
   const toneClasses = {
     info: "bg-accent border-primary/20 text-foreground",
@@ -241,7 +265,7 @@ function StatusBanner({ flow, onReset }: { flow: FlowState; onReset: () => void 
         <p className="font-medium text-sm">{config.title}</p>
         <p className="text-sm text-muted-foreground mt-0.5">{config.body}</p>
       </div>
-      {flow.kind === "mismatch" && (
+      {flow.kind === "blocked" && (
         <Button size="sm" variant="outline" onClick={onReset}>Try again</Button>
       )}
     </div>
@@ -255,18 +279,19 @@ function TimelineItem({ icon, label, hint, state }: { icon: React.ReactNode; lab
     success: "bg-success text-success-foreground border-success",
     warning: "bg-warning text-warning-foreground border-warning",
     error: "bg-destructive text-destructive-foreground border-destructive",
+    skipped: "bg-muted/50 text-muted-foreground border-border border-dashed",
   }[state];
 
-  const labelColor = state === "pending" ? "text-muted-foreground" : "text-foreground";
+  const labelColor = state === "pending" || state === "skipped" ? "text-muted-foreground" : "text-foreground";
 
   return (
     <li className="flex items-start gap-3">
       <div className={cn("h-8 w-8 rounded-full border flex items-center justify-center shrink-0 transition-colors", styles)}>
-        {state === "active" ? <Loader2 className="h-4 w-4 animate-spin" /> : state === "success" ? <CheckCircle2 className="h-4 w-4" /> : state === "error" ? <XCircle className="h-4 w-4" /> : icon}
+        {state === "active" ? <Loader2 className="h-4 w-4 animate-spin" /> : state === "success" ? <CheckCircle2 className="h-4 w-4" /> : state === "error" ? <XCircle className="h-4 w-4" /> : state === "warning" ? <AlertTriangle className="h-4 w-4" /> : icon}
       </div>
       <div className="pt-0.5">
         <p className={cn("text-sm font-medium", labelColor)}>{label}</p>
-        <p className="text-xs text-muted-foreground">{hint}</p>
+        <p className="text-xs text-muted-foreground">{hint}{state === "skipped" ? " · skipped" : ""}</p>
       </div>
     </li>
   );
