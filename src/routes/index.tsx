@@ -149,7 +149,7 @@ function Index() {
             Verify your identity before payment
           </h2>
           <p className="text-muted-foreground">
-            We check your SIM status and device to prevent fraud — in seconds.
+            We check your SIM status and device to prevent fraud in seconds.
           </p>
         </div>
 
