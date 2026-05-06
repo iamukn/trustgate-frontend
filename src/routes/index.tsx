@@ -44,6 +44,7 @@ function Index() {
   const [simSwap, setSimSwap] = useState<any>('');
   const [deviceStatus, setDeviceStatus] = useState<any>('');
   const [numbersVerify, setNumbersVerify] = useState<any>('');
+  const [err, setErr] = useState<string>('');
 
   const validatePhone = (v: string) => /^\+?[1-9]\d{7,14}$/.test(v.replace(/[\s-]/g, ""));
 
@@ -79,12 +80,18 @@ function Index() {
 
               const data = await res.json()
 
-            if (!res.ok) {
-            // 2. THIS IS THE KEY: Log the detailed Pydantic error
-            console.error("FastAPI Validation Error Details:", JSON.stringify(data, null, 2));
+            if (res.status >= 400) {
+            setErr('An internal error occurred, try again!');
+            setTimeout(() => {
+              setErr('');
+            }, 5000);
+            setSimResult("pending");
+            setDeviceResult('pending');
+            setFlow({ kind: "idle" });
             return;
             }
-            if (res.status) {
+
+            if (res.status == 200) {
               console.log(data)
               // Hanlde simSwap response
               if (data.simSwap) {
@@ -169,6 +176,7 @@ function Index() {
     setPhoneError("");
     if (!validatePhone(phone)) {
       setPhoneError("Please enter a valid phone number (e.g. +99999991000)");
+      setDisabled(false);
       return;
     }
 
@@ -290,6 +298,8 @@ function Index() {
             </ol>
           </aside>
         </div>
+
+        <p className="text-center text-sm text-muted-foreground text-red-600 mt-10">{err}</p>
 
         {
           showInfo && (
