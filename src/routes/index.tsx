@@ -152,10 +152,10 @@ function Index() {
                         setNumbersVerify(false);
                       }
 
-                    }, 3000)
+                    }, 2000)
                   } 
-                }, 2000);
-              }, 4000);
+                }, 1000);
+              }, 3000);
 
             }
             } catch (e) {
@@ -297,6 +297,7 @@ function Index() {
               <TimelineItem icon={<CreditCard className="h-4 w-4" />} label="Payment redirect" hint="Secure checkout" state={paymentState} />
             </ol>
           </aside>
+          <p className="text-center text-sm text-muted-foreground text-black-600 mt-10">CAMARA API Test Numbers: - +99999991000 | +99999991001 | +99999991002</p>
         </div>
 
         <p className="text-center text-sm text-muted-foreground text-red-600 mt-10">{err}</p>
